@@ -24,6 +24,8 @@ from mask import mask
 import re
 from urllib.parse import quote, unquote
 from flask import Flask, render_template, send_from_directory
+import re
+
 
 os.environ['SSL_CERT_FILE'] = certifi.where()
 
@@ -1285,8 +1287,17 @@ def process_match_x01(m):
             }
         }
         broadcast(dartsThrown)
-
-        play_sound_effect(points)
+        throws = turns['throws']
+        
+        if(any(re.search(r"(?<=^.)((1(?!\S)))",x['segment']['name']) for x in throws) and any(re.search(r"(?<=^.)((5(?!\S)))",x['segment']['name']) for x in throws) and any(re.search(r"(?<=^.)((20)(?!\S))",x['segment']['name']) for x in throws)):
+            if(all(re.search(r"^T",x['segment']['name']) for x in throws)):
+                play_sound_effect('tripple_classic')
+            elif(all(re.search(r"^D",x['segment']['name']) for x in throws)):
+                play_sound_effect('double_classic')
+            else:
+                play_sound_effect('classic')
+        else:
+            play_sound_effect(points)
 
         if AMBIENT_SOUNDS != 0.0:
             ambient_x_success = False
