@@ -66,7 +66,7 @@ DEFAULT_POSSIBLE_CHECKOUT_CALL_SINGLE_FILES = 0
 DEFAULT_POSSIBLE_CHECKOUT_CALL_YOURSELF_ONLY = 0
 DEFAULT_AMBIENT_SOUNDS = 0.0
 DEFAULT_AMBIENT_SOUNDS_AFTER_CALLS = 0
-DEFAULT_DOWNLOADS = True
+DEFAULT_DOWNLOADS = False
 DEFAULT_DOWNLOADS_LIMIT = 0
 DEFAULT_DOWNLOADS_LANGUAGE = 1
 DEFAULT_BACKGROUND_AUDIO_VOLUME = 0.0
@@ -870,6 +870,7 @@ def listen_to_newest_match(m, ws):
             # ppi(json.dumps(m, indent = 4, sort_keys = True))
 
             currentPlayer = m['players'][0]
+
             currentPlayerName = str(currentPlayer['name']).lower()
 
             mode = m['variant']
@@ -882,7 +883,8 @@ def listen_to_newest_match(m, ws):
 
                 matchStarted = {
                     "event": "match-started",
-                    "player": currentPlayerName,
+                    "current-player": currentPlayerName,
+                    "players": m['players'],
                     "game": {
                         "mode": mode,
                         "pointsStart": str(m['settings'][base]),
@@ -895,7 +897,8 @@ def listen_to_newest_match(m, ws):
             elif mode == 'Cricket':
                 matchStarted = {
                     "event": "match-started",
-                    "player": currentPlayerName,
+                    "current-player": currentPlayerName,
+                    "players": m['players'],
                     "game": {
                         "mode": mode,
                         # TODO: fix
@@ -942,6 +945,10 @@ def listen_to_newest_match(m, ws):
             "topic": m['id'] + ".state"
         }
         ws.send(json.dumps(paramsUnsubscribeMatchEvents))
+        matchStarted = {
+                    "event": "stopped",
+                    }
+        broadcast(matchStarted)
 
         if m['event'] == 'delete':
             play_sound_effect('matchcancel')
@@ -1015,7 +1022,12 @@ def process_match_x01(m):
         if lastPoints == "B":
             lastPoints = "0"
             busted = "True"
+        checkoutPossible = remainingPlayerScore <= 170 and remainingPlayerScore not in BOGEY_NUMBERS
+        if checkoutPossible:
+            throws = [{'dartText': t['name'], 'throw': i+1, 'checkout': True} for i,t in enumerate(m["state"]["checkoutGuide"])]
 
+        for throw in range(len(throws), 3):
+            throws.append({'dartText': None, 'throw': throw + 1})
         dartsPulled = {
             "event": "darts-pulled",
             "player": currentPlayerName,
@@ -1026,7 +1038,9 @@ def process_match_x01(m):
                 # TODO: fix
                 "dartsThrown": "3",
                 "dartsThrownValue": lastPoints,
-                "busted": busted
+                "busted": busted,
+                "checkoutPossible": checkoutPossible,
+                "checkoutCombination": throws
                 # TODO: fix
                 # "darts": [
                 #     {"number": "1", "value": "60"},
@@ -1192,7 +1206,8 @@ def process_match_x01(m):
 
         matchStarted = {
             "event": "match-started",
-            "player": currentPlayerName,
+            "current-player": currentPlayerName,
+            "players": m['players'],
             "game": {
                 "mode": variant,
                 "pointsStart": str(base),
@@ -1265,16 +1280,33 @@ def process_match_x01(m):
         ppi('Busted')
     
     # Check for 1. Dart
-    elif turns != None and turns['throws'] != [] and len(turns['throws']) == 1:
-        isGameFinished = False
+    # elif turns != None and turns['throws'] != [] and len(turns['throws']) == 1:
+    #     isGameFinished = False
 
-    # Check for 2. Dart
-    elif turns != None and turns['throws'] != [] and len(turns['throws']) == 2:
-        isGameFinished = False
+    # # Check for 2. Dart
+    # elif turns != None and turns['throws'] != [] and len(turns['throws']) == 2:
+    #     isGameFinished = False
+        
 
     # Check for 3. Dart - Score-call
-    elif turns != None and turns['throws'] != [] and len(turns['throws']) == 3:
+    elif turns != None and turns['throws'] != []: #and len(turns['throws']) == 3:
         isGameFinished = False
+        segment = turns['throws'][len(turns['throws'])-1]['segment']
+        throws = [{'dartText': t['segment']['name'], 'throw': t['throw']+1, 'checkout': False} for t in turns['throws']]
+
+
+        checkoutPossible = remainingPlayerScore <= 170 and remainingPlayerScore not in BOGEY_NUMBERS
+        if checkoutPossible:
+            checkout = [{'dartText': t['name'], 'throw': len(throws) + i + 1, 'checkout': True} for i,t in enumerate(m["state"]["checkoutGuide"])]
+            throws.extend(checkout)
+        
+        for throw in range(len(throws), 3):
+            throws.append({'dartText': None, 'throw': throw + 1})
+
+
+        
+        # for throw in range(len(throws), 3):
+        #     throws.append({'dartText': None, 'throw': throw + 1})
 
         dartsThrown = {
             "event": "darts-thrown",
@@ -1282,108 +1314,115 @@ def process_match_x01(m):
             "game": {
                 "mode": variant,
                 "pointsLeft": str(remainingPlayerScore),
-                "dartNumber": "3",
-                "dartValue": points,        
-            }
+                "dartNumber": len(turns['throws']),
+                "dartValue": points,
+                "dartText": segment['name'],
+                "dartPoints": segment['multiplier'] * segment['number']
+            },
+            "throws": throws,
+            "points": turns['points'],
+            "currentThrow": segment["number"]            
         }
         broadcast(dartsThrown)
-        throws = turns['throws']
-        
-        if(any(re.search(r"(?<=^.)((1(?!\S)))",x['segment']['name']) for x in throws) and any(re.search(r"(?<=^.)((5(?!\S)))",x['segment']['name']) for x in throws) and any(re.search(r"(?<=^.)((20)(?!\S))",x['segment']['name']) for x in throws)):
-            if(all(re.search(r"^T",x['segment']['name']) for x in throws)):
-                play_sound_effect('tripple_classic')
-            elif(all(re.search(r"^D",x['segment']['name']) for x in throws)):
-                play_sound_effect('double_classic')
-            else:
-                play_sound_effect('classic')
-        else:
-            play_sound_effect(points)
-
-        if AMBIENT_SOUNDS != 0.0:
-            ambient_x_success = False
-
-            throw_combo = ''
-            for t in turns['throws']:
-                throw_combo += t['segment']['name'].lower()
-            # ppi(throw_combo)
-
-            if turns['points'] != 0:
-                ambient_x_success = play_sound_effect('ambient_' + str(throw_combo), AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
-                if ambient_x_success == False:
-                    ambient_x_success = play_sound_effect('ambient_' + str(turns['points']), AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
-
-            if ambient_x_success == False:
-                if turns['points'] >= 150:
-                    play_sound_effect('ambient_150more', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)   
-                elif turns['points'] >= 120:
-                    play_sound_effect('ambient_120more', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
-                elif turns['points'] >= 100:
-                    play_sound_effect('ambient_100more', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
-                elif turns['points'] >= 50:
-                    play_sound_effect('ambient_50more', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
-                elif turns['points'] >= 1:
-                    play_sound_effect('ambient_1more', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
+        if len(turns['throws']) == 3:
+            print()
+            throws = turns['throws']
+            
+            if(any(re.search(r"(?<=^.)((1(?!\S)))",x['segment']['name']) for x in throws) and any(re.search(r"(?<=^.)((5(?!\S)))",x['segment']['name']) for x in throws) and any(re.search(r"(?<=^.)((20)(?!\S))",x['segment']['name']) for x in throws)):
+                if(all(re.search(r"^T",x['segment']['name']) for x in throws)):
+                    play_sound_effect('tripple_classic')
+                elif(all(re.search(r"^D",x['segment']['name']) for x in throws)):
+                    play_sound_effect('double_classic')
                 else:
-                    play_sound_effect('ambient_noscore', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
+                    play_sound_effect('classic')
+            else:
+                play_sound_effect(points)
 
-            # Koordinaten der Pfeile
-            coords = []
-            for t in turns['throws']:
-                if 'coords' in t:
-                    coords.append({"x": t['coords']['x'], "y": t['coords']['y']})
+            if AMBIENT_SOUNDS != 0.0:
+                ambient_x_success = False
 
-            # ppi(str(coords))
+                throw_combo = ''
+                for t in turns['throws']:
+                    throw_combo += t['segment']['name'].lower()
+                # ppi(throw_combo)
 
-            # Suche das Koordinatenpaar, das am weitesten von den beiden Anderen entfernt ist
-            if len(coords) == 3:
-                # Liste mit allen möglichen Kombinationen von Koordinatenpaaren erstellen
-                combinations = [(coords[0], coords[1]), (coords[0], coords[2]), (coords[1], coords[2])]
+                if turns['points'] != 0:
+                    ambient_x_success = play_sound_effect('ambient_' + str(throw_combo), AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
+                    if ambient_x_success == False:
+                        ambient_x_success = play_sound_effect('ambient_' + str(turns['points']), AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
 
-                # Variablen für das ausgewählte Koordinatenpaar und die maximale Gesamtdistanz initialisieren
-                selected_coord = None
-                max_total_distance = 0
+                if ambient_x_success == False:
+                    if turns['points'] >= 150:
+                        play_sound_effect('ambient_150more', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)   
+                    elif turns['points'] >= 120:
+                        play_sound_effect('ambient_120more', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
+                    elif turns['points'] >= 100:
+                        play_sound_effect('ambient_100more', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
+                    elif turns['points'] >= 50:
+                        play_sound_effect('ambient_50more', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
+                    elif turns['points'] >= 1:
+                        play_sound_effect('ambient_1more', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
+                    else:
+                        play_sound_effect('ambient_noscore', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
 
-                # Gesamtdistanz für jede Kombination von Koordinatenpaaren berechnen
-                for combination in combinations:
-                    dist1 = math.sqrt((combination[0]["x"] - combination[1]["x"])**2 + (combination[0]["y"] - combination[1]["y"])**2)
-                    dist2 = math.sqrt((combination[1]["x"] - combination[0]["x"])**2 + (combination[1]["y"] - combination[0]["y"])**2)
-                    total_distance = dist1 + dist2
-                    
-                    # Überprüfen, ob die Gesamtdistanz größer als die bisher größte Gesamtdistanz ist
-                    if total_distance > max_total_distance:
-                        max_total_distance = total_distance
-                        selected_coord = combination[0]
+                # Koordinaten der Pfeile
+                coords = []
+                for t in turns['throws']:
+                    if 'coords' in t:
+                        coords.append({"x": t['coords']['x'], "y": t['coords']['y']})
 
-                group_score = 100.0
-                if selected_coord != None:
-                    
-                    # Distanz von selected_coord zu coord2 berechnen
-                    dist1 = math.sqrt((selected_coord["x"] - coords[1]["x"])**2 + (selected_coord["y"] - coords[1]["y"])**2)
+                # ppi(str(coords))
 
-                    # Distanz von selected_coord zu coord3 berechnen
-                    dist2 = math.sqrt((selected_coord["x"] - coords[2]["x"])**2 + (selected_coord["y"] -  coords[2]["y"])**2)
+                # Suche das Koordinatenpaar, das am weitesten von den beiden Anderen entfernt ist
+                if len(coords) == 3:
+                    # Liste mit allen möglichen Kombinationen von Koordinatenpaaren erstellen
+                    combinations = [(coords[0], coords[1]), (coords[0], coords[2]), (coords[1], coords[2])]
 
-                    # Durchschnitt der beiden Distanzen berechnen
-                    avg_dist = (dist1 + dist2) / 2
+                    # Variablen für das ausgewählte Koordinatenpaar und die maximale Gesamtdistanz initialisieren
+                    selected_coord = None
+                    max_total_distance = 0
 
-                    group_score = (1.0 - avg_dist) * 100
+                    # Gesamtdistanz für jede Kombination von Koordinatenpaaren berechnen
+                    for combination in combinations:
+                        dist1 = math.sqrt((combination[0]["x"] - combination[1]["x"])**2 + (combination[0]["y"] - combination[1]["y"])**2)
+                        dist2 = math.sqrt((combination[1]["x"] - combination[0]["x"])**2 + (combination[1]["y"] - combination[0]["y"])**2)
+                        total_distance = dist1 + dist2
+                        
+                        # Überprüfen, ob die Gesamtdistanz größer als die bisher größte Gesamtdistanz ist
+                        if total_distance > max_total_distance:
+                            max_total_distance = total_distance
+                            selected_coord = combination[0]
 
-                # ppi("Distance by max_dis_coord to coord2: " + str(dist1))
-                # ppi("Distance by max_dis_coord to coord3: " + str(dist2))
-                # ppi("Group-score: " + str(group_score))
+                    group_score = 100.0
+                    if selected_coord != None:
+                        
+                        # Distanz von selected_coord zu coord2 berechnen
+                        dist1 = math.sqrt((selected_coord["x"] - coords[1]["x"])**2 + (selected_coord["y"] - coords[1]["y"])**2)
 
-                if group_score >= 98:
-                    play_sound_effect('ambient_group_legendary', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)   
-                elif group_score >= 95:
-                    play_sound_effect('ambient_group_perfect', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
-                elif group_score >= 92:
-                    play_sound_effect('ambient_group_very_nice', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
-                elif group_score >= 89:
-                    play_sound_effect('ambient_group_good', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
-                elif group_score >= 86:
-                    play_sound_effect('ambient_group_normal', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
-     
-        ppi("Turn ended")
+                        # Distanz von selected_coord zu coord3 berechnen
+                        dist2 = math.sqrt((selected_coord["x"] - coords[2]["x"])**2 + (selected_coord["y"] -  coords[2]["y"])**2)
+
+                        # Durchschnitt der beiden Distanzen berechnen
+                        avg_dist = (dist1 + dist2) / 2
+
+                        group_score = (1.0 - avg_dist) * 100
+
+                    # ppi("Distance by max_dis_coord to coord2: " + str(dist1))
+                    # ppi("Distance by max_dis_coord to coord3: " + str(dist2))
+                    # ppi("Group-score: " + str(group_score))
+
+                    if group_score >= 98:
+                        play_sound_effect('ambient_group_legendary', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)   
+                    elif group_score >= 95:
+                        play_sound_effect('ambient_group_perfect', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
+                    elif group_score >= 92:
+                        play_sound_effect('ambient_group_very_nice', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
+                    elif group_score >= 89:
+                        play_sound_effect('ambient_group_good', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
+                    elif group_score >= 86:
+                        play_sound_effect('ambient_group_normal', AMBIENT_SOUNDS_AFTER_CALLS, volume_mult = AMBIENT_SOUNDS)
+        
+            ppi("Turn ended")
 
     mirror_sounds()
 
@@ -1494,7 +1533,7 @@ def process_match_cricket(m):
         
         matchStarted = {
             "event": "match-started",
-            "player": currentPlayerName,
+            "current-player": currentPlayerName,
             "game": {
                 "mode": variant,
                 # TODO: fix
@@ -1788,7 +1827,7 @@ def on_message_autodarts(ws, message):
 
                     # ppi(json.dumps(data, indent = 4, sort_keys = True))
 
-                    process_common(data)
+                    # process_common(data)
 
                     variant = data['variant']
                     if variant == 'X01' or variant == 'Random Checkout':
@@ -1841,6 +1880,50 @@ def on_error_autodarts(ws, error):
 
 def on_open_client(client, server):
     ppi('NEW CLIENT CONNECTED: ' + str(client))
+
+def send_current_match():
+    global currentMatch
+    global accessToken
+
+    res = requests.get(AUTODART_MATCHES_URL + currentMatch+'/state', headers={'Authorization': 'Bearer ' + accessToken})
+    m = res.json()
+    # ppi(json.dumps(m, indent = 4, sort_keys = True))
+
+    currentPlayer = m['players'][0]
+
+    currentPlayerName = str(currentPlayer['name']).lower()
+
+    mode = m['variant']
+
+    base = 'baseScore'
+    if 'target' in m['settings']:
+        base = 'target'
+    turn = m["turns"][0]
+    points = turn['points']
+    throws = [{'dartText': t['segment']['name'], 'throw': t['throw']+1} for t in turn['throws']]
+    players = [{'userId': p['userId'], 'index': p['index'], 'name': p['name'], 'score': m['gameScores'][p['index']]} for p in m['players']]
+    currentPlayerIndex = m['player']
+    remainingPlayerScore = m['gameScores'][currentPlayerIndex]
+    checkoutPossible = remainingPlayerScore <= 170 and remainingPlayerScore not in BOGEY_NUMBERS
+    if checkoutPossible:
+        checkout = [{'dartText': t['name'], 'throw': len(throws) + i + 1, 'checkout': True} for i,t in enumerate(m["state"]["checkoutGuide"])]
+        throws.extend(checkout)
+    for throw in range(len(throws), 3):
+        throws.append({'dartText': None, 'throw': throw + 1})
+    matchStarted = {
+        "event": "match-ongoing",
+        "current-player": currentPlayerName,
+        "players": players,
+        "game": {
+            "mode": mode,
+            "pointsStart": str(m['settings'][base]),
+            # TODO: fix
+            "special": "TODO"
+            },
+         "throws": throws,
+         "points": points
+        }
+    broadcast(matchStarted)
 
 def on_message_client(client, server, message):
     def process(*args):
@@ -1907,7 +1990,17 @@ def on_message_client(client, server, message):
                 for cp in call_parts:
                     play_sound_effect(cp, wait_for_last = False, volume_mult = 1.0)
                 mirror_sounds()
-        
+
+            elif message.startswith("connected"):
+                global currentMatch
+                if currentMatch is not None:
+                    send_current_match()
+                else:
+                    noMatch = {
+                        "event": "no-game"
+                    }
+                    broadcast(noMatch)
+
 
         except Exception as e:
             ppe('WS-Client-Message failed: ', e)
